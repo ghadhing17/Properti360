@@ -33,7 +33,6 @@ export const TIME_SLOTS: { value: string; label: string }[] = [
   { value: "13:00", label: "13:00" },
   { value: "14:00", label: "14:00" },
   { value: "15:00", label: "15:00" },
-  { value: "16:00", label: "16:00" },
 ];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

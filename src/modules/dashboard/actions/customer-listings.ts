@@ -41,7 +41,7 @@ export async function updateCustomerListing(id: string, formData: FormData): Pro
   try {
     const listing = await prisma.listing.findUnique({
       where: { id },
-      select: { id: true, ownerId: true },
+      select: { id: true, ownerId: true, status: true },
     });
     if (!listing) return { error: "Listing tidak ditemukan" };
 
@@ -66,6 +66,15 @@ export async function updateCustomerListing(id: string, formData: FormData): Pro
     }
 
     const data = parsed.data;
+
+    // Listing yang sudah PUBLISHED tidak boleh kehilangan field wajib publish
+    // (mis. harga dikosongkan) lewat jalur edit customer — tolak sebelum update.
+    if (listing.status === "PUBLISHED" && data.price === null) {
+      return {
+        error: "Harga wajib diisi karena listing sudah terpublikasi. Isi harga terlebih dahulu.",
+        fieldErrors: { price: ["Harga wajib diisi selama listing berstatus Published"] },
+      };
+    }
 
     await prisma.listing.update({
       where: { id },

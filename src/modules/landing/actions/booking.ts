@@ -9,6 +9,7 @@ import {
   OPERATING_START_HOUR,
   OPERATING_END_HOUR,
 } from "@/shared/lib/booking-schedule";
+import { getScheduleSettings, describeScheduleConflict } from "@/shared/lib/schedule-settings";
 
 export type BookingActionState = {
   success?: boolean;
@@ -35,6 +36,7 @@ export async function createBookingRequest(
   const raw = {
     name: String(formData.get("name") ?? "").trim(),
     phone: String(formData.get("phone") ?? "").trim(),
+    // Compose alamat dari hidden field (addressDetail, wilayah) yang di-build di client
     address: String(formData.get("address") ?? "").trim(),
     propertyType: String(formData.get("propertyType") ?? "RUMAH").trim() || "RUMAH",
     preferredDate: formData.get("preferredDate") ? String(formData.get("preferredDate")) : null,
@@ -52,6 +54,12 @@ export async function createBookingRequest(
     if (dt) {
       if (!isWithinOperatingHours(dt)) {
         return { error: `Jadwal di luar jam operasional. Pilih waktu antara ${OPERATING_START_HOUR.toString().padStart(2,"0")}:00 – ${OPERATING_END_HOUR.toString().padStart(2,"0")}:00.` };
+      }
+      // Cek pengaturan jadwal dari /admin/settings (hari tutup + hari libur + jam per hari)
+      const schedule = await getScheduleSettings();
+      const scheduleConflict = describeScheduleConflict(schedule, dt);
+      if (scheduleConflict) {
+        return { error: `Maaf, jadwal tidak tersedia — ${scheduleConflict}. Silakan pilih tanggal/waktu lain.` };
       }
       const conflicts = await findConflicts(dt);
       if (conflicts.length > 0) {

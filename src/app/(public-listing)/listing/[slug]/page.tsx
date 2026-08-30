@@ -1,15 +1,20 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cookies } from "next/headers";
+import { Visibility, Person, KingBed, Bathtub, SquareFoot, HomeWork } from "@mui/icons-material";
 import { auth } from "@/shared/auth";
 import { ViewerFacade } from "@/modules/listing/components/viewer-facade";
+import { ListingHeader } from "@/modules/listing/components/listing-header";
 import { ShareButtons } from "@/modules/listing/components/share-buttons";
-import { ContactForm } from "@/modules/listing/components/contact-form";
 import { GalleryLightbox } from "@/modules/listing/components/gallery-lightbox";
+import { ContactCard } from "@/modules/listing/components/contact-card";
+import { QuickStatsBar, QuickStat, SpecDetailGrid, buildSpecItems } from "@/modules/listing/components/property-specs";
+import { FacilityPills } from "@/modules/listing/components/facility-pills";
+import { AccessLandmarksCard } from "@/modules/listing/components/access-landmarks";
+import { SimilarListings } from "@/modules/listing/components/similar-listings";
 import { getListingBySlug, getSimilarListings, recordListingView } from "@/modules/listing/queries/listing";
-import { listingCanonicalUrl, getSiteUrl, toAbsoluteImage } from "@/modules/listing/lib/seo";
-import { fasilitasLabel, type FasilitasValue } from "@/shared/lib/validations/listing";
+import { parseNearbyPlaces } from "@/shared/lib/landmarks";
+import { listingCanonicalUrl, toAbsoluteImage, getSiteUrl } from "@/modules/listing/lib/seo";
 
 type Props = { params: Promise<{ slug: string }> };
 
@@ -112,12 +117,31 @@ export default async function ListingPage({ params }: Props) {
       ? new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(listing.price)
       : null;
 
+  const regionLabel = listing.regionPath ?? listing.city;
+  const statusLabel = listing.statusProperti?.replace("_", " / ") ?? null;
+
   // 7) Properti Serupa — categoryId SAMA atau regency/city SAMA, exclude self, limit 4, horizontal scroll
   const similar = await getSimilarListings({
     excludeId: listing.id,
     categoryId: listing.categoryId,
     regencyCode: listing.regencyCode,
     city: listing.city,
+  });
+
+  const similarItems = similar.map((s) => {
+    const thumb = s.media[0]?.thumbnailUrl ?? s.media[0]?.url ?? null;
+    return {
+      id: s.id,
+      slug: s.slug,
+      title: s.title,
+      city: s.city,
+      priceLabel:
+        s.price != null
+          ? new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(s.price)
+          : null,
+      thumb,
+      hasTour: s._count.media > 0,
+    };
   });
 
   const canonical = listingCanonicalUrl(listing.slug);
@@ -162,202 +186,134 @@ export default async function ListingPage({ params }: Props) {
     },
   };
 
+  const specItems = buildSpecItems(listing);
+
   return (
     <div className="bg-background">
       {/* 2) JSON-LD */}
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
 
-      {/* 3) Section 360 tour — facade lazy load */}
-      <section className="mx-auto max-w-6xl px-4 pt-6">
-        <ViewerFacade embedCode={embedCode} thumbnailUrl={cover} title={listing.title} />
-        <p className="mt-2 text-center text-[11px] text-muted">
-          Konten 360° di-host di Panoee • Teks di sekitar viewer adalah sumber SEO utama
-        </p>
-      </section>
+      {/* 3) Hero virtual tour full-width — Vistura style (facade lazy load) */}
+      <ViewerFacade
+        embedCode={embedCode}
+        thumbnailUrl={cover}
+        title={listing.title}
+        categoryName={listing.category?.name ?? null}
+        regionLabel={regionLabel}
+        statusLabel={statusLabel}
+        priceLabel={priceLabel}
+      />
 
       {/* 4) Section info: judul, lokasi, harga, tombol share */}
-      <section className="mx-auto max-w-6xl px-4 py-6">
-        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-accent/15 px-2.5 py-1 text-[11px] font-semibold text-primary-dark">
-                {listing.category?.name}
-              </span>
-              <span className="text-xs text-muted">• {listing.regionPath ?? listing.city}</span>
-              {listing.status === "DRAFT" && (
-                <span className="rounded-full bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning">
-                  Draft — hanya owner/admin
-                </span>
-              )}
-            </div>
-            <h1 className="mt-2 text-2xl font-bold leading-tight text-foreground md:text-3xl">{listing.title}</h1>
-            <p className="mt-1 flex items-center gap-1 text-sm text-muted">
-              <span>📍</span> {listing.address} — {listing.regionPath ?? listing.city}
-            </p>
-            {listing.regionPath && listing.regionPath !== listing.city && (
-              <p className="mt-1 text-xs text-muted">
-                Wilayah: {listing.regionPath}{" "}
-                {listing.regionCode && <span className="font-mono text-[11px]">({listing.regionCode})</span>}
-              </p>
-            )}
-            {priceLabel && <p className="mt-2 text-xl font-bold text-primary">{priceLabel}</p>}
-          </div>
-          <div className="shrink-0">
-            <p className="mb-2 text-xs font-medium text-muted">Bagikan listing ini:</p>
-            <ShareButtons url={canonical} title={listing.title} />
-          </div>
-        </div>
-      </section>
+      <ListingHeader
+        title={listing.title}
+        address={listing.address}
+        regionLabel={regionLabel}
+        regionPath={listing.regionPath}
+        categoryName={listing.category?.name}
+        statusLabel={statusLabel}
+        isDraft={listing.status === "DRAFT"}
+        priceLabel={priceLabel}
+        certificate={listing.sertifikat}
+        shareSlot={<ShareButtons url={canonical} title={listing.title} />}
+      />
 
-      {/* Two column */}
-      <section className="mx-auto max-w-6xl px-4 pb-10">
-        <div className="grid gap-6 md:grid-cols-[1.7fr_0.9fr]">
+      {/* Two column — Vistura layout */}
+      <section className="mx-auto max-w-6xl px-4 py-8">
+        <div className="grid gap-6 md:grid-cols-[13fr_7fr]">
           {/* Left */}
           <div className="space-y-6">
+            {/* Quick stats bar — kamar / luas (ala Vistura) */}
+            <QuickStatsBar
+              items={[
+                listing.kamarTidur != null ? (
+                  <QuickStat key="kt" icon={<KingBed sx={{ fontSize: 20 }} />} label="Kamar Tidur" value={`${listing.kamarTidur} Kamar`} />
+                ) : null,
+                listing.kamarMandi != null ? (
+                  <QuickStat key="km" icon={<Bathtub sx={{ fontSize: 20 }} />} label="Kamar Mandi" value={`${listing.kamarMandi} Kamar`} />
+                ) : null,
+                listing.luasTanah ? (
+                  <QuickStat key="lt" icon={<SquareFoot sx={{ fontSize: 20 }} />} label="Luas Tanah" value={`${listing.luasTanah} m²`} />
+                ) : null,
+                listing.luasBangunan ? (
+                  <QuickStat key="lb" icon={<HomeWork sx={{ fontSize: 20 }} />} label="Luas Bangunan" value={`${listing.luasBangunan} m²`} />
+                ) : null,
+              ]}
+            />
+
             {/* 5) Deskripsi */}
-            <div className="rounded-xl border bg-white p-6 shadow-sm">
-              <h2 className="text-base font-semibold text-foreground">Deskripsi Properti</h2>
+            <div className="rounded-2xl border border-border bg-surface p-6 shadow-sm">
+              <h2 className="text-lg font-semibold text-foreground md:text-xl">Deskripsi Properti</h2>
               <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-foreground/80">{listing.description}</p>
               <div className="mt-4 flex flex-wrap gap-2 text-xs text-muted">
-                <span className="rounded-full border bg-background px-2.5 py-1">{listing.propertyType}</span>
-                <span className="rounded-full border bg-background px-2.5 py-1">{listing.viewCount} views</span>
-                <span className="rounded-full border bg-background px-2.5 py-1">by {listing.owner?.name ?? "—"}</span>
+                <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1">
+                  <span className="font-medium">{listing.propertyType}</span>
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1">
+                  <Visibility sx={{ fontSize: 14 }} /> {listing.viewCount} kali dilihat
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2.5 py-1">
+                  <Person sx={{ fontSize: 14 }} /> {listing.owner?.name ?? "—"}
+                </span>
               </div>
             </div>
 
             {/* 5) Galeri foto pendukung — grid responsive + lightbox */}
             {gallery.length > 0 && (
-              <div className="rounded-xl border bg-white p-6 shadow-sm">
-                <h2 className="text-base font-semibold text-foreground">Galeri Foto Pendukung</h2>
+              <div className="rounded-2xl border border-border bg-surface p-6 shadow-sm">
+                <h2 className="text-lg font-semibold text-foreground md:text-xl">Galeri Foto</h2>
                 <p className="mt-1 text-xs text-muted">Klik foto untuk memperbesar</p>
                 <GalleryLightbox photos={gallery} title={listing.title} />
               </div>
             )}
 
-            {/* 6) Detail Properti */}
-            {(listing.luasTanah || listing.luasBangunan || listing.kamarTidur || listing.kamarMandi ||
-              listing.lantai || listing.garasi || listing.statusProperti || listing.tahunDibangun ||
-              listing.sertifikat || listing.hadapRumah || listing.dayaListrik || listing.sumberAir) && (
-              <div className="rounded-xl border bg-white p-6 shadow-sm">
-                <h2 className="text-base font-semibold text-foreground">Detail Properti</h2>
-                <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
-                  {[
-                    { label: "Status", value: listing.statusProperti?.replace("_", " / ") },
-                    { label: "Sertifikat", value: listing.sertifikat },
-                    { label: "Luas Tanah", value: listing.luasTanah ? `${listing.luasTanah} m²` : null },
-                    { label: "Luas Bangunan", value: listing.luasBangunan ? `${listing.luasBangunan} m²` : null },
-                    { label: "Kamar Tidur", value: listing.kamarTidur != null ? `${listing.kamarTidur} kamar` : null },
-                    { label: "Kamar Mandi", value: listing.kamarMandi != null ? `${listing.kamarMandi} kamar` : null },
-                    { label: "Lantai", value: listing.lantai != null ? `${listing.lantai} lantai` : null },
-                    { label: "Garasi/Carport", value: listing.garasi != null ? `${listing.garasi} unit` : null },
-                    { label: "Tahun Dibangun", value: listing.tahunDibangun },
-                    { label: "Hadap Rumah", value: listing.hadapRumah?.replace(/_/g, " ") },
-                    { label: "Daya Listrik", value: listing.dayaListrik ? `${listing.dayaListrik} W` : null },
-                    { label: "Sumber Air", value: listing.sumberAir?.replace(/_/g, " ") },
-                  ]
-                    .filter((d) => d.value != null && d.value !== "")
-                    .map((d) => (
-                      <div key={d.label} className="flex flex-col">
-                        <span className="text-[11px] font-medium uppercase tracking-wide text-muted">{d.label}</span>
-                        <span className="mt-0.5 text-sm font-semibold text-foreground">{String(d.value)}</span>
-                      </div>
-                    ))}
+            {/* 6) Spesifikasi detail — grid ikon ala Vistura */}
+            {specItems.length > 0 && (
+              <div className="rounded-2xl border border-border bg-surface p-6 shadow-sm">
+                <h2 className="text-lg font-semibold text-foreground md:text-xl">Spesifikasi Detail</h2>
+                <div className="mt-5">
+                  <SpecDetailGrid items={specItems} />
                 </div>
               </div>
             )}
 
-            {/* 7) Fasilitas */}
+            {/* 7) Fasilitas & Fitur Utama — pills dengan ikon */}
             {listing.fasilitas && listing.fasilitas.length > 0 && (
-              <div className="rounded-xl border bg-white p-6 shadow-sm">
-                <h2 className="text-base font-semibold text-foreground">Fasilitas</h2>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {listing.fasilitas.map((f) => (
-                    <span
-                      key={f}
-                      className="rounded-full border border-primary/20 bg-primary/5 px-3 py-1 text-xs font-medium text-primary-dark"
-                    >
-                      {fasilitasLabel[f as FasilitasValue] ?? f}
-                    </span>
-                  ))}
+              <div className="rounded-2xl border border-border bg-surface p-6 shadow-sm">
+                <h2 className="text-lg font-semibold text-foreground md:text-xl">Fasilitas &amp; Fitur Utama</h2>
+                <div className="mt-4">
+                  <FacilityPills fasilitas={listing.fasilitas} />
                 </div>
               </div>
             )}
+
+            {/* 8) Akses & Landmark Sekitar — cache Overpass (muncul saat save dgn koordinat) */}
+            {listing.latitude != null &&
+              listing.longitude != null &&
+              listing.nearbyPlaces != null && (
+                <AccessLandmarksCard
+                  latitude={listing.latitude}
+                  longitude={listing.longitude}
+                  places={parseNearbyPlaces(listing.nearbyPlaces)}
+                />
+              )}
           </div>
 
-          {/* Right sticky */}
+          {/* Right sticky — contact card + map */}
           <div className="space-y-4">
-            <div className="rounded-xl border bg-white p-6 shadow-sm md:sticky md:top-20">
-              {/* 6) Form Hubungi Pemilik — via Server Action */}
-              <h3 className="text-sm font-semibold text-foreground">Hubungi Pemilik</h3>
-              <p className="mt-1 text-xs text-muted">
-                Respon cepat via WhatsApp — pesan masuk ke dashboard pemilik & admin.
-              </p>
-              <div className="mt-4">
-                <ContactForm listingId={listing.id} />
-              </div>
-              {/* Map embed */}
-              <div className="mt-6">
-                <p className="mb-2 text-xs font-medium text-foreground">Lokasi</p>
-                <div className="overflow-hidden rounded-lg border">
-                  <iframe
-                    title={`Peta ${listing.title}`}
-                    src={`https://maps.google.com/maps?q=${encodeURIComponent(listing.address + " " + listing.city)}&z=15&output=embed`}
-                    className="h-48 w-full border-0"
-                    loading="lazy"
-                  />
-                </div>
-                <a
-                  href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(listing.address + " " + listing.city)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-2 inline-block text-xs font-medium text-primary hover:underline"
-                >
-                  Buka di Google Maps →
-                </a>
-              </div>
-            </div>
+            <ContactCard
+              listingId={listing.id}
+              ownerName={listing.owner?.name}
+              ownerPhone={listing.owner?.phone}
+              city={listing.city}
+              title={listing.title}
+            />
           </div>
         </div>
       </section>
 
       {/* 7) Properti Serupa */}
-      {similar.length > 0 && (
-        <section className="border-t bg-white py-8">
-          <div className="mx-auto max-w-6xl px-4">
-            <h2 className="text-base font-semibold text-foreground">Properti Serupa di {listing.regencyName ?? listing.city}</h2>
-            <div className="mt-4 flex gap-4 overflow-x-auto pb-2">
-              {similar.map((s) => {
-                const thumb = s.media[0]?.thumbnailUrl ?? s.media[0]?.url ?? null;
-                const price =
-                  s.price != null
-                    ? new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(s.price)
-                    : null;
-                return (
-                  <Link
-                    key={s.id}
-                    href={`/listing/${s.slug}`}
-                    className="min-w-[220px] shrink-0 overflow-hidden rounded-xl border bg-background hover:shadow-sm"
-                  >
-                    <div className="aspect-[4/3] bg-white">
-                      {thumb ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={thumb} alt={s.title} className="h-full w-full object-cover" />
-                      ) : (
-                        <div className="flex h-full items-center justify-center text-xs text-muted">No image</div>
-                      )}
-                    </div>
-                    <div className="p-3">
-                      <p className="line-clamp-1 text-xs font-semibold text-foreground">{s.title}</p>
-                      {price && <p className="mt-1 text-xs font-bold text-primary">{price}</p>}
-                    </div>
-                  </Link>
-                );
-              })}
-            </div>
-          </div>
-        </section>
-      )}
-
+      <SimilarListings items={similarItems} regionLabel={listing.city} />
     </div>
   );
 }

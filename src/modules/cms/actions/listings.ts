@@ -1,10 +1,13 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { Prisma } from "@prisma/client";
 import { requireRole } from "@/shared/auth/session";
 import { prisma } from "@/shared/lib/db";
 import { getStorage, generateThumbnail } from "@/shared/storage";
-import { listingDraftSchema, listingPublishSchema } from "@/shared/lib/validations/listing";
+import { fetchNearbyPlaces, parseNearbyPlaces, recomputeDistances, type NearbyPlace } from "@/shared/lib/landmarks";
+import { listingDraftSchema, listingPublishSchema, listingFieldLabels } from "@/shared/lib/validations/listing";
+import type { ZodError } from "zod";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -66,6 +69,16 @@ function toNullableString(v: FormDataEntryValue | null): string | null {
   return s === "" ? null : s;
 }
 
+// Pesan error ringkas: daftar semua field bermasalah (label ID) supaya user tahu
+// persis apa yang harus diperbaiki, bukan hanya issue pertama.
+function formatValidationErrors(error: ZodError): string {
+  const issues = error.issues;
+  if (issues.length === 0) return "Data tidak valid";
+  if (issues.length === 1) return issues[0].message;
+  const labels = [...new Set(issues.map((i) => listingFieldLabels[String(i.path[0])] ?? String(i.path[0])))];
+  return `Beberapa field belum valid: ${labels.join(", ")}. Lihat tanda merah pada form.`;
+}
+
 // Resolve nama wilayah dari kode — return map kode->nama, null jika tidak ada
 async function resolveWilayah(kodes: (string | null | undefined)[]): Promise<Map<string, string>> {
   const uniq = [...new Set(kodes.filter((k): k is string => !!k && k.trim() !== ""))];
@@ -96,6 +109,60 @@ async function handleThumbnailUpload(file: File | null): Promise<string | null> 
   const storage = getStorage();
   const url = await storage.upload(thumbBuffer, "listings/cover.webp", "image/webp");
   return url;
+}
+
+// ---------------------------------------------------------------------------
+// Landmark sekitar (Overpass) — best effort, tidak boleh gagalkan save
+// ---------------------------------------------------------------------------
+
+async function saveNearbyPlaces(listingId: string, places: NearbyPlace[] | null, manual = false): Promise<void> {
+  try {
+    await prisma.listing.update({
+      where: { id: listingId },
+      data:
+        places === null
+          ? { nearbyPlaces: Prisma.DbNull, nearbyPlacesAt: null, nearbyPlacesManual: false }
+          : {
+              nearbyPlaces: places as unknown as Prisma.InputJsonValue,
+              nearbyPlacesAt: new Date(),
+              nearbyPlacesManual: manual,
+            },
+    });
+  } catch (e) {
+    console.error("[saveNearbyPlaces]", e);
+  }
+}
+
+/**
+ * Daftar landmark hasil edit manual dari form (CRUD oleh admin).
+ * undefined = tidak ada edit (form tidak mengirim flag) → biarkan mekanisme otomatis.
+ */
+function readManualLandmarks(formData: FormData): NearbyPlace[] | undefined {
+  if (!formData.get("landmarksEdited")) return undefined;
+  const raw = formData.get("nearbyPlacesJson");
+  if (typeof raw !== "string") return [];
+  try {
+    return parseNearbyPlaces(JSON.parse(raw));
+  } catch {
+    console.error("[readManualLandmarks] JSON nearbyPlacesJson tidak valid — fallback ke otomatis");
+    return undefined;
+  }
+}
+
+/** Fetch landmark untuk koordinat baru. Return true jika cache terisi/diperbarui. */
+async function refreshNearbyPlaces(listingId: string, lat: number, lng: number): Promise<boolean> {
+  try {
+    const places = await fetchNearbyPlaces(lat, lng);
+    if (places === null) {
+      console.error(`[refreshNearbyPlaces] Overpass tidak tersedia untuk listing ${listingId} — cache lama dipertahankan`);
+      return false;
+    }
+    await saveNearbyPlaces(listingId, places);
+    return true;
+  } catch (e) {
+    console.error("[refreshNearbyPlaces]", e);
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +201,10 @@ export async function createListing(formData: FormData): Promise<ActionResult> {
       lantai: toNullableString(formData.get("lantai")),
       garasi: toNullableString(formData.get("garasi")),
       statusProperti: toNullableString(formData.get("statusProperti")) as never,
+      nego: toNullableString(formData.get("nego")),
+      periodeSewa: toNullableString(formData.get("periodeSewa")) as never,
+      latitude: toNullableString(formData.get("latitude")),
+      longitude: toNullableString(formData.get("longitude")),
       tahunDibangun: toNullableString(formData.get("tahunDibangun")),
       sertifikat: toNullableString(formData.get("sertifikat")) as never,
       hadapRumah: toNullableString(formData.get("hadapRumah")) as never,
@@ -149,12 +220,16 @@ export async function createListing(formData: FormData): Promise<ActionResult> {
     const parsed = schema.safeParse(raw);
     if (!parsed.success) {
       return {
-        error: parsed.error.issues[0]?.message ?? "Data tidak valid",
+        error: formatValidationErrors(parsed.error),
         fieldErrors: parsed.error.flatten().fieldErrors as Record<string, string[]>,
       };
     }
 
     const data = parsed.data;
+
+    if ((data.latitude == null) !== (data.longitude == null)) {
+      return { error: "Latitude dan Longitude harus diisi bersamaan" };
+    }
 
     // Validasi FK exist — hanya saat PUBLISHED (DRAFT boleh tanpa kategori/owner)
     if (isPublish) {
@@ -248,6 +323,10 @@ export async function createListing(formData: FormData): Promise<ActionResult> {
       lantai: data.lantai ?? null,
       garasi: data.garasi ?? null,
       statusProperti: data.statusProperti ?? null,
+      nego: data.nego,
+      periodeSewa: data.periodeSewa ?? null,
+      latitude: data.latitude ?? null,
+      longitude: data.longitude ?? null,
       tahunDibangun: data.tahunDibangun ?? null,
       sertifikat: data.sertifikat ?? null,
       hadapRumah: data.hadapRumah ?? null,
@@ -289,6 +368,15 @@ export async function createListing(formData: FormData): Promise<ActionResult> {
       );
     }
     if (mediaCreates.length) await Promise.all(mediaCreates);
+
+    if (data.latitude != null && data.longitude != null) {
+      const manual = readManualLandmarks(formData);
+      if (manual !== undefined) {
+        await saveNearbyPlaces(listing.id, recomputeDistances(data.latitude, data.longitude, manual), manual.length > 0);
+      } else {
+        await refreshNearbyPlaces(listing.id, data.latitude, data.longitude);
+      }
+    }
 
     revalidatePath("/admin/listings");
     revalidatePath("/admin");
@@ -336,6 +424,10 @@ export async function updateListing(id: string, formData: FormData): Promise<Act
       lantai: toNullableString(formData.get("lantai")),
       garasi: toNullableString(formData.get("garasi")),
       statusProperti: toNullableString(formData.get("statusProperti")) as never,
+      nego: toNullableString(formData.get("nego")),
+      periodeSewa: toNullableString(formData.get("periodeSewa")) as never,
+      latitude: toNullableString(formData.get("latitude")),
+      longitude: toNullableString(formData.get("longitude")),
       tahunDibangun: toNullableString(formData.get("tahunDibangun")),
       sertifikat: toNullableString(formData.get("sertifikat")) as never,
       hadapRumah: toNullableString(formData.get("hadapRumah")) as never,
@@ -350,11 +442,15 @@ export async function updateListing(id: string, formData: FormData): Promise<Act
     const parsed = schemaUpdate.safeParse(raw);
     if (!parsed.success) {
       return {
-        error: parsed.error.issues[0]?.message ?? "Data tidak valid",
+        error: formatValidationErrors(parsed.error),
         fieldErrors: parsed.error.flatten().fieldErrors as Record<string, string[]>,
       };
     }
     const data = parsed.data;
+
+    if ((data.latitude == null) !== (data.longitude == null)) {
+      return { error: "Latitude dan Longitude harus diisi bersamaan" };
+    }
 
     // Validasi FK hanya saat PUBLISHED atau jika field diisi
     if (isPublishUpdate) {
@@ -449,6 +545,10 @@ export async function updateListing(id: string, formData: FormData): Promise<Act
       lantai: data.lantai ?? null,
       garasi: data.garasi ?? null,
       statusProperti: data.statusProperti ?? null,
+      nego: data.nego,
+      periodeSewa: data.periodeSewa ?? null,
+      latitude: data.latitude ?? null,
+      longitude: data.longitude ?? null,
       tahunDibangun: data.tahunDibangun ?? null,
       sertifikat: data.sertifikat ?? null,
       hadapRumah: data.hadapRumah ?? null,
@@ -459,6 +559,32 @@ export async function updateListing(id: string, formData: FormData): Promise<Act
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (prisma.listing.update as any)({ where: { id }, data: updatePayload });
+
+    // Sinkronkan cache landmark: edit manual dari form menang; auto-fetch hanya
+    // saat koordinat berubah / cache kosong dan daftar belum dikunci manual.
+    const manualPlaces = readManualLandmarks(formData);
+    if (data.latitude == null || data.longitude == null) {
+      if (existing.nearbyPlaces !== null || existing.nearbyPlacesAt !== null || existing.nearbyPlacesManual) {
+        await saveNearbyPlaces(id, null);
+      }
+    } else if (manualPlaces !== undefined) {
+      await saveNearbyPlaces(id, recomputeDistances(data.latitude, data.longitude, manualPlaces), manualPlaces.length > 0);
+    } else {
+      const coordsChanged =
+        existing.latitude !== data.latitude || existing.longitude !== data.longitude;
+      if (existing.nearbyPlacesManual && existing.nearbyPlaces !== null) {
+        // Daftar dikunci manual — jangan fetch ulang, cukup segarkan jarak bila koordinat bergeser
+        if (coordsChanged) {
+          await saveNearbyPlaces(
+            id,
+            recomputeDistances(data.latitude, data.longitude, parseNearbyPlaces(existing.nearbyPlaces)),
+            true
+          );
+        }
+      } else if (coordsChanged || existing.nearbyPlaces === null) {
+        await refreshNearbyPlaces(id, data.latitude, data.longitude);
+      }
+    }
 
     // Upsert media thumbnail
     if (newThumbnailUrl) {
@@ -561,5 +687,38 @@ export async function deleteListing(id: string): Promise<ActionResult> {
   } catch (e: unknown) {
     console.error("[deleteListing]", e);
     return { error: e instanceof Error ? e.message : "Gagal menghapus listing" };
+  }
+}
+
+/**
+ * Ambil landmark dari Overpass untuk koordinat saat ini (dipakai tombol
+ * "Generate Otomatis" di form — hasil belum disimpan, bisa diedit dulu).
+ */
+export async function generateLandmarksAction(
+  latitude: number,
+  longitude: number
+): Promise<{ places?: NearbyPlace[]; error?: string }> {
+  await requireRole("ADMIN");
+
+  if (
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    return { error: "Koordinat tidak valid — tentukan dulu titik properti di peta" };
+  }
+
+  try {
+    const places = await fetchNearbyPlaces(latitude, longitude);
+    if (places === null) {
+      return { error: "Layanan peta (Overpass) sedang tidak tersedia — coba lagi sebentar lagi" };
+    }
+    return { places };
+  } catch (e: unknown) {
+    console.error("[generateLandmarksAction]", e);
+    return { error: "Gagal mengambil landmark dari peta" };
   }
 }

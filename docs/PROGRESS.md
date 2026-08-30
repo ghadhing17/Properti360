@@ -33,14 +33,40 @@ penting yang diambil, deviasi dari plan awal, atau known issue.
 > awal, atau keputusan baru yang diambil di tengah jalan, supaya tidak
 > hilang konteksnya. Format: tanggal — keputusan — alasan.
 
-- _(belum ada entry, isi seiring development)_
+- 2026-08-30 — Fitur Settings admin ditambahkan (`/admin/settings`, 6 tab:
+  Umum, SEO & OG, Jam Operasional, Hari Libur, Profil Admin, Pengguna) —
+  skema baru: `SiteSettings` (singleton id=1), `OperatingHour` (7 baris),
+  `Holiday` (date string "YYYY-MM-DD" untuk hindari timezone bug), plus
+  `User.isActive`. Migrasi: `20260830012001_add_site_settings_operating_hours_holidays_user_active`.
+- 2026-08-30 — Metadata root layout kini async dari `SiteSettings`
+  (`generateMetadata`); fallback string placeholder lama diganti default
+  dinamis (`{siteName} — Virtual Tour 360° Properti`). OG image disimpan via
+  `shared/storage` path `settings/og/`.
+- 2026-08-30 — Validasi booking (landing + admin) kini juga cek
+  `schedule-settings` (hari tutup, hari libur, jam per hari). Default seed
+  mempertahankan perilaku lama: Senin–Sabtu 09:00–16:00, Minggu tutup.
+- 2026-08-30 — Manajemen pengguna: ADMIN bisa ubah role/aktifkan/hapus akun
+  lain, TAPI tidak bisa menurunkan/menonaktifkan/menghapus akun sendiri
+  (anti lockout). Reset password menghasilkan password sementara yang hanya
+  ditampilkan sekali di dialog. Akun nonaktif diblokir di `authorize`;
+  session JWT lama tetap valid hingga expire (keterbatasan JWT strategy).
+- 2026-08-30 — Fitur pilih wilayah aktif: tabel `ActiveRegion` (kode+nama
+  denormalisasi, level PROVINCE/REGENCY), tab baru "Wilayah" di
+  /admin/settings, filter di `/api/wilayah` untuk daftar provinsi & kab/kota.
+  Tabel kosong = semua aktif (auto-seed), prefill `?kode` & resolve `?codes`
+  tidak difilter agar listing lama tetap bisa tampil/diedit. Migrasi:
+  `20260830023220_add_active_regions`.
 
 ## Known Issues / Technical Debt
 
 > Catat hal-hal yang sengaja disederhanakan dulu untuk MVP dan perlu
 > diperbaiki nanti, supaya tidak terlupa.
 
-- _(belum ada entry, isi seiring development)_
+- Nonaktif-kan akun (`User.isActive = false`) tidak langsung memutus session
+  JWT yang sudah ada — user aktif tetap login sampai token expire (30 hari)
+  karena strategy JWT tanpa query DB per-request. Blokir login sudah aktif.
+- Kalender booking publik (`closedDates`) di-fetch sekali saat mount — perubahan
+  jam operasional/libur baru terlihat setelah reload halaman.
 
 ## Yang TIDAK Boleh Berubah Tanpa Diskusi
 

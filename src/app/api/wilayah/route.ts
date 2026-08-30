@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/shared/lib/db";
+import { getActiveRegionSets } from "@/modules/cms";
 
 // GET /api/wilayah?parent=32       -> kab/kota di Jawa Barat
 // GET /api/wilayah?parent=32.73    -> kecamatan di Kota Bandung
@@ -57,10 +58,13 @@ export async function GET(req: NextRequest) {
     if (parent !== null) {
       // parent = "" atau "0" dianggap root (provinsi)
       if (parent === "" || parent === "0") {
-        const rows = await prisma.wilayah.findMany({
+        let rows = await prisma.wilayah.findMany({
           where: { kode: { not: { contains: "." } } },
           orderBy: { nama: "asc" },
         });
+        // Hanya provinsi aktif (dikelola /admin/settings)
+        const active = await getActiveRegionSets();
+        if (active) rows = rows.filter((r) => active.provinces.has(r.kode));
         return NextResponse.json({ data: rows });
       }
       // Anak langsung: kode diawali parent + "." dan depth = parentDepth+1
@@ -85,7 +89,12 @@ export async function GET(req: NextRequest) {
           orderBy: { nama: "asc" },
         });
         // Filter di aplikasi berdasarkan panjang kode tepat (menghindari kec/desa ikut masuk)
-        const result = direct.filter((r) => r.kode.length === expectedLen);
+        let result = direct.filter((r) => r.kode.length === expectedLen);
+        // Kab/kota hanya yang aktif (dikelola /admin/settings)
+        if (expectedLen === 5) {
+          const active = await getActiveRegionSets();
+          if (active) result = result.filter((r) => active.regencies.has(r.kode));
+        }
         return NextResponse.json({ data: result });
       }
 
@@ -98,11 +107,13 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ data: direct });
     }
 
-    // Default: daftar provinsi (kode tanpa titik)
-    const provinsi = await prisma.wilayah.findMany({
+    // Default: daftar provinsi (kode tanpa titik) — hanya yang aktif
+    let provinsi = await prisma.wilayah.findMany({
       where: { kode: { not: { contains: "." } } },
       orderBy: { nama: "asc" },
     });
+    const active = await getActiveRegionSets();
+    if (active) provinsi = provinsi.filter((r) => active.provinces.has(r.kode));
     return NextResponse.json({ data: provinsi });
   } catch (e) {
     console.error("[GET /api/wilayah]", e);

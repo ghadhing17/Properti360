@@ -37,6 +37,7 @@ import { createBookingRequest } from "@/modules/landing/actions/booking";
 import { TIME_SLOTS } from "@/shared/lib/booking-schedule";
 import type { ProductForBooking } from "@/shared/lib/validations/product";
 import { formatPrice } from "@/shared/lib/validations/product";
+import { AddressFields, type AddressValue } from "@/modules/landing/components/address-fields";
 
 // -- Constants -----------------------------------------------------------------
 
@@ -67,6 +68,7 @@ type Props = {
   products?: ProductForBooking[];
   initialProductId?: string;
   compact?: boolean;
+  scheduleNote?: string;
 };
 
 // -- Helpers -------------------------------------------------------------------
@@ -193,10 +195,11 @@ interface CalendarProps {
   selectedDate: string | null;
   onSelect: (date: string) => void;
   fullyBookedDates: Set<string>;
+  closedDates: Set<string>;
   loadingMonth: boolean;
 }
 
-function BookingCalendar({ selectedDate, onSelect, fullyBookedDates, loadingMonth }: CalendarProps) {
+function BookingCalendar({ selectedDate, onSelect, fullyBookedDates, closedDates, loadingMonth }: CalendarProps) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -278,12 +281,13 @@ function BookingCalendar({ selectedDate, onSelect, fullyBookedDates, loadingMont
             const isSunday = cellDate.getDay() === 0;
             const isBeyondMax = cellDate > maxDate;
             const isFullyBooked = fullyBookedDates.has(dateStr);
-            const isDisabled = isPast || isSunday || isBeyondMax || isFullyBooked;
+            const isClosedDay = isSunday || closedDates.has(dateStr);
+            const isDisabled = isPast || isClosedDay || isBeyondMax || isFullyBooked;
             const isSelected = selectedDate === dateStr;
             const isToday = toDateString(today) === dateStr;
 
-            const tooltipTitle = isSunday
-              ? "Tutup hari Minggu"
+            const tooltipTitle = isClosedDay
+              ? "Hari tutup / libur"
               : isFullyBooked
               ? "Penuh — semua slot terisi"
               : isPast
@@ -318,7 +322,7 @@ function BookingCalendar({ selectedDate, onSelect, fullyBookedDates, loadingMont
                           }
                         : isDisabled
                         ? {
-                            bgcolor: isFullyBooked || isSunday ? "rgba(0,0,0,0.04)" : "transparent",
+                            bgcolor: isFullyBooked || isClosedDay ? "rgba(0,0,0,0.04)" : "transparent",
                             color: "text.disabled",
                             textDecoration: isFullyBooked ? "line-through" : "none",
                           }
@@ -439,20 +443,36 @@ function TimeSlotGrid({ selectedTime, onSelect, slotStatuses }: TimeSlotsProps) 
 
 // -- Main Form -----------------------------------------------------------------
 
-export function BookingForm({ products = [], initialProductId, compact = false }: Props) {
+export function BookingForm({ products = [], initialProductId, compact = false, scheduleNote }: Props) {
   const [state, formAction, pending] = useActionState(createBookingRequest, initialState);
   const formRef = useRef<HTMLFormElement>(null);
 
   const [step, setStep] = useState<1 | 2>(1);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const calendarRef = useRef<HTMLDivElement>(null);
+  const timeSlotRef = useRef<HTMLDivElement>(null);
+  const [highlightCalendar, setHighlightCalendar] = useState(false);
+  const [highlightTimeSlot, setHighlightTimeSlot] = useState(false);
 
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
   const [selectedProductId, setSelectedProductId] = useState<string>(initialProductId ?? "");
   const [slotStatuses, setSlotStatuses] = useState<Record<string, SlotStatus>>({});
   const [fullyBookedDates, setFullyBookedDates] = useState<Set<string>>(new Set());
+  const [closedDates, setClosedDates] = useState<Set<string>>(new Set());
   const [loadingSlots, startSlotTransition] = useTransition();
   const [loadingFullyBooked, setLoadingFullyBooked] = useState(false);
   const [step1Error, setStep1Error] = useState<string | null>(null);
+  const [showAddressErrors, setShowAddressErrors] = useState(false);
+
+  const emptyAddress: AddressValue = {
+    provinceCode: "", provinceName: "",
+    regencyCode: "", regencyName: "",
+    districtCode: "", districtName: "",
+    villageCode: "", villageName: "",
+    addressDetail: "",
+  };
+  const [addressValue, setAddressValue] = useState<AddressValue>(emptyAddress);
 
   useEffect(() => {
     const today = new Date();
@@ -463,6 +483,9 @@ export function BookingForm({ products = [], initialProductId, compact = false }
       .then((data) => {
         if (Array.isArray(data.fullyBookedDates)) {
           setFullyBookedDates(new Set(data.fullyBookedDates));
+        }
+        if (Array.isArray(data.closedDates)) {
+          setClosedDates(new Set(data.closedDates));
         }
       })
       .catch(() => {})
@@ -493,15 +516,43 @@ export function BookingForm({ products = [], initialProductId, compact = false }
   const handleDateSelect = (date: string) => {
     setSelectedDate(date);
     setStep1Error(null);
+    setHighlightCalendar(false);
     loadSlotsForDate(date);
   };
 
   const handleNextStep = () => {
-    if (!selectedDate) { setStep1Error("Pilih tanggal terlebih dahulu."); return; }
-    if (!selectedTime) { setStep1Error("Pilih jam terlebih dahulu."); return; }
+    if (!selectedDate) {
+      setHighlightCalendar(true);
+      setHighlightTimeSlot(false);
+      requestAnimationFrame(() => {
+        if (calendarRef.current) {
+          const top = calendarRef.current.getBoundingClientRect().top + window.scrollY - 80;
+          window.scrollTo({ top, behavior: "smooth" });
+        }
+      });
+      return;
+    }
+    if (!selectedTime) {
+      setHighlightTimeSlot(true);
+      setHighlightCalendar(false);
+      requestAnimationFrame(() => {
+        if (timeSlotRef.current) {
+          const top = timeSlotRef.current.getBoundingClientRect().top + window.scrollY - 80;
+          window.scrollTo({ top, behavior: "smooth" });
+        }
+      });
+      return;
+    }
+    setHighlightCalendar(false);
+    setHighlightTimeSlot(false);
     setStep1Error(null);
     setStep(2);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    requestAnimationFrame(() => {
+      if (cardRef.current) {
+        const top = cardRef.current.getBoundingClientRect().top + window.scrollY - 80;
+        window.scrollTo({ top, behavior: "smooth" });
+      }
+    });
   };
 
   useEffect(() => {
@@ -511,6 +562,7 @@ export function BookingForm({ products = [], initialProductId, compact = false }
       setSelectedTime(null);
       setSlotStatuses({});
       setSelectedProductId("");
+      setAddressValue(emptyAddress);
       setStep(1);
     }
   }, [state.success]);
@@ -559,7 +611,7 @@ export function BookingForm({ products = [], initialProductId, compact = false }
   }
 
   return (
-    <Card sx={{ borderRadius: 1, boxShadow: compact ? "0 20px 50px rgba(0,0,0,0.25)" : "0 2px 8px rgba(0,0,0,0.08)", overflow: "hidden" }}>
+    <Card ref={cardRef} sx={{ borderRadius: 1, boxShadow: compact ? "0 20px 50px rgba(0,0,0,0.25)" : "0 2px 8px rgba(0,0,0,0.08)", overflow: "hidden" }}>
       {/* Header */}
       <Box sx={{ px: { xs: 3, md: 4 }, pt: { xs: 3, md: 4 }, pb: 0 }}>
         <StepIndicator step={step} />
@@ -595,11 +647,11 @@ export function BookingForm({ products = [], initialProductId, compact = false }
             }}
           >
             {/* Calendar */}
-            <Box sx={{ p: { xs: 2, md: 2.5 }, borderBottom: "1px solid", borderColor: "divider" }}>
+            <Box ref={calendarRef} sx={{ p: { xs: 2, md: 2.5 }, borderBottom: "1px solid", borderColor: highlightCalendar ? "error.main" : "divider", transition: "border-color 0.2s", bgcolor: highlightCalendar ? "rgba(211,47,47,0.03)" : "transparent" }}>
               <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
-                <CalendarMonthIcon sx={{ fontSize: 16, color: "primary.main" }} />
-                <Typography sx={{ fontWeight: 600, fontSize: "0.85rem", color: "text.primary" }}>
-                  Tanggal
+                <CalendarMonthIcon sx={{ fontSize: 16, color: highlightCalendar ? "error.main" : "primary.main" }} />
+                <Typography sx={{ fontWeight: 600, fontSize: "0.85rem", color: highlightCalendar ? "error.main" : "text.primary" }}>
+                  Tanggal {highlightCalendar && <Box component="span" sx={{ fontSize: "0.75rem", fontWeight: 400, ml: 1 }}>— wajib dipilih</Box>}
                 </Typography>
                 {selectedDate && (
                   <Chip
@@ -616,16 +668,17 @@ export function BookingForm({ products = [], initialProductId, compact = false }
                 selectedDate={selectedDate}
                 onSelect={handleDateSelect}
                 fullyBookedDates={fullyBookedDates}
+                closedDates={closedDates}
                 loadingMonth={loadingFullyBooked}
               />
             </Box>
 
             {/* Time slots */}
-            <Box sx={{ p: { xs: 2, md: 2.5 } }}>
+            <Box ref={timeSlotRef} sx={{ p: { xs: 2, md: 2.5 }, bgcolor: highlightTimeSlot ? "rgba(211,47,47,0.03)" : "transparent", transition: "background-color 0.2s" }}>
               <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
-                <AccessTimeIcon sx={{ fontSize: 16, color: "primary.main" }} />
-                <Typography sx={{ fontWeight: 600, fontSize: "0.85rem", color: "text.primary" }}>
-                  Jam Mulai
+                <AccessTimeIcon sx={{ fontSize: 16, color: highlightTimeSlot ? "error.main" : "primary.main" }} />
+                <Typography sx={{ fontWeight: 600, fontSize: "0.85rem", color: highlightTimeSlot ? "error.main" : "text.primary" }}>
+                  Jam Mulai {highlightTimeSlot && <Box component="span" sx={{ fontSize: "0.75rem", fontWeight: 400, ml: 1 }}>— wajib dipilih</Box>}
                 </Typography>
                 {selectedTime && (
                   <Chip
@@ -658,7 +711,7 @@ export function BookingForm({ products = [], initialProductId, compact = false }
                 <>
                   <TimeSlotGrid
                     selectedTime={selectedTime}
-                    onSelect={(t) => { setSelectedTime(t); setStep1Error(null); }}
+                    onSelect={(t) => { setSelectedTime(t); setStep1Error(null); setHighlightTimeSlot(false); }}
                     slotStatuses={
                       loadingSlots
                         ? Object.fromEntries(TIME_SLOTS.map((s) => [s.value, "loading" as SlotStatus]))
@@ -818,10 +871,10 @@ export function BookingForm({ products = [], initialProductId, compact = false }
               borderRadius: 1,
             }}
           >
-            Lanjut Isi Data Diri ?
+            Lanjut Isi Data Booking
           </Button>
           <Typography variant="caption" color="text.secondary" sx={{ display: "block", textAlign: "center", mt: 1 }}>
-            Jam operasional Senin–Sabtu, 09:00–16:00
+            {scheduleNote ?? "Jam operasional Senin–Sabtu, 09:00–16:00"}
           </Typography>
         </Box>
       )}
@@ -880,7 +933,10 @@ export function BookingForm({ products = [], initialProductId, compact = false }
             </Alert>
           )}
 
-          <Box ref={formRef} component="form" action={formAction} sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <Box ref={formRef} component="form" action={formAction} onSubmit={(e) => {
+              const missing = !addressValue.provinceCode || !addressValue.regencyCode || !addressValue.districtCode || !addressValue.villageCode || !addressValue.addressDetail.trim();
+              if (missing) { e.preventDefault(); setShowAddressErrors(true); return; }
+            }} sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
             <input type="hidden" name="preferredDate" value={selectedDate ?? ""} />
             <input type="hidden" name="preferredTime" value={selectedTime ?? ""} />
             <input type="hidden" name="productId" value={selectedProductId} />
@@ -904,16 +960,25 @@ export function BookingForm({ products = [], initialProductId, compact = false }
               error={!!state.fieldErrors?.phone}
               helperText={state.fieldErrors?.phone?.[0]}
             />
-            <TextField
+
+            {/* Alamat: wilayah + detail */}
+            <AddressFields
+              value={addressValue}
+              onChange={setAddressValue}
+              fieldErrors={state.fieldErrors}
+              showErrors={showAddressErrors}
+            />
+            {/* Hidden field address yang di-compose untuk server action */}
+            <input
+              type="hidden"
               name="address"
-              label="Alamat Properti"
-              required
-              size="small"
-              fullWidth
-              multiline
-              minRows={2}
-              error={!!state.fieldErrors?.address}
-              helperText={state.fieldErrors?.address?.[0]}
+              value={[
+                addressValue.addressDetail,
+                addressValue.villageName,
+                addressValue.districtName,
+                addressValue.regencyName,
+                addressValue.provinceName,
+              ].filter(Boolean).join(", ")}
             />
             <FormControl size="small" fullWidth required>
               <InputLabel>Tipe Properti</InputLabel>
@@ -937,7 +1002,7 @@ export function BookingForm({ products = [], initialProductId, compact = false }
                 borderRadius: 1,
               }}
             >
-              {pending ? "Mengirim..." : "Kirim Booking ?"}
+              {pending ? "Mengirim..." : "Kirim Booking"}
             </Button>
 
             <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>

@@ -72,6 +72,13 @@ enum PropertyStatus {
   DIJUAL_DISEWA
 }
 
+// Periode sewa — dipakai jika statusProperti = DISEWA / DIJUAL_DISEWA
+enum PeriodeSewa {
+  BULANAN
+  TAHUNAN
+  BULANAN_DAN_TAHUNAN
+}
+
 enum WaterSource {
   PDAM
   SUMUR
@@ -92,6 +99,7 @@ model User {
   phone         String?
   password      String // hash bcrypt, jangan simpan plain text
   role          Role      @default(CUSTOMER)
+  isActive      Boolean   @default(true) // false = akun dinonaktifkan admin (tidak bisa login)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -189,6 +197,14 @@ model Listing {
   lantai         Int?
   garasi         Int?    // jumlah kapasitas garasi/carport
   statusProperti PropertyStatus?
+  nego           Boolean         @default(false) // opsi nego (dijual)
+  periodeSewa    PeriodeSewa?    // bulanan/tahunan (disewa)
+  latitude       Float?          // koordinat lokasi untuk peta
+  longitude      Float?
+  // Landmark sekitar (gerbang tol, RS, mall, stasiun, bandara, wisata) — cache hasil Overpass API
+  nearbyPlaces   Json?           // array NearbyPlace: {name, category, lat, lng, distanceKm, minutes}
+  nearbyPlacesAt DateTime?       // waktu fetch terakhir — null = belum pernah di-fetch
+  nearbyPlacesManual Boolean @default(false) // true = daftar diedit manual, auto-fetch tidak menimpa
   tahunDibangun  Int?
   sertifikat     CertificateType?
   hadapRumah     FacingDirection?
@@ -347,4 +363,75 @@ model BookingRequest {
   @@index([propertyType])
   @@index([productId])
   @@map("booking_requests")
+}
+
+// ──────────────────────────────────────────────────────────────
+// SITE SETTINGS (singleton) — dikelola via /admin/settings
+// ──────────────────────────────────────────────────────────────
+
+// Baris tunggal id=1. Query pakai helper getSiteSettings() yang auto-create
+// baris default jika belum ada — jangan pernah hardcode id lain.
+model SiteSettings {
+  id Int @id @default(1)
+
+  // ── Profil bisnis
+  siteName     String  @default("Properti 360")
+  tagline      String?
+  description  String? @db.Text
+  contactEmail String?
+  contactPhone String?
+  whatsapp     String?
+  address      String? @db.Text
+  instagramUrl String?
+  facebookUrl  String?
+
+  // ── SEO & Open Graph (default meta situs)
+  metaTitle       String? // fallback: "{siteName} — Virtual Tour 360° Properti"
+  metaDescription String? @db.Text
+  ogTitle         String?
+  ogDescription   String? @db.Text
+  ogImage         String? @db.Text // URL (biasanya /uploads/settings/og/<uuid>.jpg)
+
+  updatedAt DateTime @updatedAt
+
+  @@map("site_settings")
+}
+
+// Jam operasional per hari — 7 baris tetap (0=Minggu .. 6=Sabtu).
+// Dibuat otomatis oleh getOperatingHours() jika belum ada.
+model OperatingHour {
+  id        Int     @id @default(autoincrement())
+  dayOfWeek Int     @unique // 0=Minggu .. 6=Sabtu (index Date.getDay())
+  isClosed  Boolean @default(false)
+  openTime  String  @default("09:00") // "HH:MM" waktu lokal
+  closeTime String  @default("16:00") // "HH:MM" waktu lokal
+
+  @@map("operating_hours")
+}
+
+// Hari libur nasional / acara — menutup slot booking pada tanggal tsb.
+// date disimpan "YYYY-MM-DD" (string) agar bebas masalah timezone.
+model Holiday {
+  id          String   @id @default(cuid())
+  date        String   @unique @db.VarChar(10) // "YYYY-MM-DD"
+  name        String
+  isRecurring Boolean  @default(false) // true = berulang setiap tahun (bulan-tanggal saja)
+  createdAt   DateTime @default(now())
+
+  @@index([date])
+  @@map("holidays")
+}
+
+// Wilayah aktif — subset dari tabel Wilayah (Kepmendagri) yang boleh
+// dipakai di form listing/lead. Dikelola via /admin/settings tab "Wilayah".
+// level: "PROVINCE" (kode "XX") | "REGENCY" (kode "XX.XX").
+// Tabel kosong = semua wilayah aktif (fallback supaya form tidak pernah kosong).
+model ActiveRegion {
+  id    String @id @default(cuid())
+  code  String @unique // kode Wilayah: "32" (prov) atau "32.73" (kab/kota)
+  name  String // denormalisasi dari Wilayah.nama saat disimpan
+  level String // "PROVINCE" | "REGENCY"
+
+  @@index([level])
+  @@map("active_regions")
 }

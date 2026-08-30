@@ -6,6 +6,7 @@ import { updateCustomerListing } from "@/modules/dashboard/actions/customer-list
 
 type Props = {
   listingId: string;
+  isPublished?: boolean;
   initial: {
     description: string;
     price: number | null;
@@ -14,7 +15,7 @@ type Props = {
   };
 };
 
-export function CustomerEditForm({ listingId, initial }: Props) {
+export function CustomerEditForm({ listingId, isPublished = false, initial }: Props) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -60,14 +61,17 @@ export function CustomerEditForm({ listingId, initial }: Props) {
       </div>
 
       <div>
-        <label className="mb-1 block text-xs font-medium text-foreground">Harga (opsional)</label>
+        <label className="mb-1 block text-xs font-medium text-foreground">
+          {isPublished ? "Harga *" : "Harga (opsional)"}
+        </label>
         <input
           name="price"
           type="number"
           min={0}
           step={1}
           defaultValue={initial.price ?? ""}
-          placeholder="Kosongkan jika tidak pakai harga"
+          required={isPublished}
+          placeholder={isPublished ? "Wajib diisi — listing sedang terpublikasi" : "Kosongkan jika tidak pakai harga"}
           className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
         {fieldErrors.price && <p className="mt-1 text-xs text-danger">{fieldErrors.price[0]}</p>}

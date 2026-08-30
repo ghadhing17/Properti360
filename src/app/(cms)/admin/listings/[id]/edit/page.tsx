@@ -61,12 +61,18 @@ export default async function EditListingPage({ params }: Props) {
     lantai: listing.lantai,
     garasi: listing.garasi,
     statusProperti: listing.statusProperti,
+    nego: listing.nego,
+    periodeSewa: listing.periodeSewa,
+    latitude: listing.latitude,
+    longitude: listing.longitude,
     tahunDibangun: listing.tahunDibangun,
     sertifikat: listing.sertifikat,
     hadapRumah: listing.hadapRumah,
     dayaListrik: listing.dayaListrik,
     sumberAir: listing.sumberAir,
     fasilitas: listing.fasilitas,
+    nearbyPlaces: listing.nearbyPlaces,
+    nearbyPlacesManual: listing.nearbyPlacesManual,
   };
 
   return (

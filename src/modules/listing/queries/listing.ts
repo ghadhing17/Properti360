@@ -10,7 +10,7 @@ export function getListingBySlug(slug: string) {
     where: { slug },
     include: {
       category: { select: { name: true, slug: true, id: true } },
-      owner: { select: { name: true } },
+      owner: { select: { name: true, phone: true } },
       media: { orderBy: { order: "asc" } },
     },
   });
@@ -37,7 +37,10 @@ export function getSimilarListings(input: {
       },
       take: 4,
       orderBy: { createdAt: "desc" },
-      include: { media: { where: { type: "PHOTO" }, take: 1, orderBy: { order: "asc" } } },
+      include: {
+        media: { where: { type: "PHOTO" }, take: 1, orderBy: { order: "asc" } },
+        _count: { select: { media: { where: { type: "PANOEE_TOUR" } } } },
+      },
     })
     .catch(() => []);
 }

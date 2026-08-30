@@ -5,23 +5,32 @@ import {
   getBlockWindow,
   windowsOverlap,
   combineDateTime,
-  OPERATING_START_HOUR,
-  OPERATING_END_HOUR,
 } from "@/shared/lib/booking-schedule";
+import {
+  getScheduleSettings,
+  getDayHours,
+  findHoliday,
+  toLocalDateString,
+  isDateUnavailable,
+  WEEKDAY_NAMES,
+} from "@/shared/lib/schedule-settings";
 
 export const dynamic = "force-dynamic";
 
 /**
  * GET /api/bookings/available-slots?date=YYYY-MM-DD
  *
- * Returns which TIME_SLOTS are blocked (have a conflicting booking) for a
- * given date, plus which dates in a ±2-month window have at least one
- * blocked slot (so the calendar can gray-out fully-booked days).
+ * Returns which TIME_SLOTS are blocked (have a conflicting booking, di luar
+ * jam operasional, atau hari tutup/libur) for a given date, plus which dates
+ * in a ±90-day window have at least one blocked slot (so the calendar can
+ * gray-out fully-booked days) and which dates are closed entirely.
  *
  * Response shape:
  * {
- *   blockedSlots: string[];   // e.g. ["09:00","10:00"]
+ *   blockedSlots: string[];     // e.g. ["09:00","10:00"]
  *   fullyBookedDates: string[]; // e.g. ["2026-09-15"]
+ *   closedDates?: string[];     // hari tutup/libur dalam window (opsional)
+ *   reason?: string;            // alasan tanggal penuh-tutup (opsional)
  * }
  */
 export async function GET(req: NextRequest) {
@@ -33,16 +42,39 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    const schedule = await getScheduleSettings();
+
     // ── 1. Blocked slots for the requested date ───────────────────────────────
+    const [y, m, d] = date.split("-").map(Number);
+    const requestedDate = new Date(y, m - 1, d); // waktu lokal — hindari geser hari UTC
+
+    const holiday = findHoliday(schedule, requestedDate);
+    const dayHours = getDayHours(schedule, requestedDate);
+
     const blockedSlots: string[] = [];
+
+    if (holiday || dayHours.isClosed) {
+      // Hari tutup / libur → semua slot diblokir
+      for (const slot of TIME_SLOTS) blockedSlots.push(slot.value);
+      return NextResponse.json({
+        blockedSlots,
+        fullyBookedDates: [],
+        closedDates: [date],
+        reason: holiday
+          ? `Hari libur (${holiday.name})`
+          : `Tutup di hari ${WEEKDAY_NAMES[dayHours.dayOfWeek]}`,
+      });
+    }
 
     for (const slot of TIME_SLOTS) {
       const dt = combineDateTime(date, slot.value);
       if (!dt) continue;
 
-      // Slot outside operating hours → always blocked
-      const h = dt.getHours();
-      if (h < OPERATING_START_HOUR || h > OPERATING_END_HOUR) {
+      // Slot di luar jam operasional per hari → blocked
+      const minutes = dt.getHours() * 60 + dt.getMinutes();
+      const [openH, openM] = dayHours.openTime.split(":").map(Number);
+      const [closeH, closeM] = dayHours.closeTime.split(":").map(Number);
+      if (minutes < openH * 60 + openM || minutes > closeH * 60 + closeM) {
         blockedSlots.push(slot.value);
         continue;
       }
@@ -70,12 +102,21 @@ export async function GET(req: NextRequest) {
       if (hasConflict) blockedSlots.push(slot.value);
     }
 
-    // ── 2. Fully-booked dates in ±60-day window ───────────────────────────────
+    // ── 2. Fully-booked + closed dates in 90-day window ──────────────────────
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const windowStart = new Date(today);
     const windowEnd   = new Date(today);
     windowEnd.setDate(windowEnd.getDate() + 90);
+
+    // Tanggal tutup/libur dalam window → dikirim terpisah agar kalender bisa
+    // menonaktifkannya tanpa menghitung "fully booked".
+    const closedDates: string[] = [];
+    const cursor = new Date(windowStart);
+    while (cursor <= windowEnd) {
+      if (isDateUnavailable(schedule, cursor)) closedDates.push(toLocalDateString(cursor));
+      cursor.setDate(cursor.getDate() + 1);
+    }
 
     // Fetch all active bookings in the window
     const bookings = await prisma.bookingRequest.findMany({
@@ -88,10 +129,11 @@ export async function GET(req: NextRequest) {
 
     // For each date that has any booking, check if ALL slots are blocked
     const dateSet = new Set<string>();
+    const closedSet = new Set(closedDates);
     for (const b of bookings) {
       if (b.preferredDate) {
         const d = b.preferredDate.toISOString().slice(0, 10);
-        dateSet.add(d);
+        if (!closedSet.has(d)) dateSet.add(d);
       }
     }
 
@@ -124,9 +166,9 @@ export async function GET(req: NextRequest) {
       if (allBlocked) fullyBookedDates.push(d);
     }
 
-    return NextResponse.json({ blockedSlots, fullyBookedDates });
+    return NextResponse.json({ blockedSlots, fullyBookedDates, closedDates });
   } catch (e) {
     console.error("[/api/bookings/available-slots]", e);
-    return NextResponse.json({ blockedSlots: [], fullyBookedDates: [] }, { status: 500 });
+    return NextResponse.json({ blockedSlots: [], fullyBookedDates: [], closedDates: [] }, { status: 500 });
   }
 }

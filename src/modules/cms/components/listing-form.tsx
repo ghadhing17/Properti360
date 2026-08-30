@@ -1,11 +1,14 @@
 "use client";
 
-import { useState, useTransition, useMemo } from "react";
+import { useState, useTransition, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
 import { createListing, updateListing } from "@/modules/cms/actions/listings";
+import { resolveWilayahFromCoords } from "@/modules/cms/actions/wilayah";
 import { PhotoGallery } from "@/modules/cms/components/photo-gallery";
-import { RegionSelect } from "@/modules/cms/components/region-select";
-import { fasilitasValues, fasilitasLabel, type FasilitasValue, publishRequiredFields } from "@/shared/lib/validations/listing";
+import { LandmarkEditor } from "@/modules/cms/components/landmark-editor";
+import { parseNearbyPlaces } from "@/shared/lib/landmarks";
+import { fasilitasValues, fasilitasLabel, getPublishMissingFields, type FasilitasValue, publishRequiredFields } from "@/shared/lib/validations/listing";
 import Box from "@mui/material/Box";
 import Paper from "@mui/material/Paper";
 import Typography from "@mui/material/Typography";
@@ -16,6 +19,8 @@ import MenuItem from "@mui/material/MenuItem";
 import MuiSelect from "@mui/material/Select";
 import InputLabel from "@mui/material/InputLabel";
 import FormControl from "@mui/material/FormControl";
+import FormControlLabel from "@mui/material/FormControlLabel";
+import Checkbox from "@mui/material/Checkbox";
 import FormHelperText from "@mui/material/FormHelperText";
 import Button from "@mui/material/Button";
 import ToggleButton from "@mui/material/ToggleButton";
@@ -27,6 +32,8 @@ import InputAdornment from "@mui/material/InputAdornment";
 import Tabs from "@mui/material/Tabs";
 import Tab from "@mui/material/Tab";
 import Badge from "@mui/material/Badge";
+import CircularProgress from "@mui/material/CircularProgress";
+import PlaceIcon from "@mui/icons-material/Place";
 import SaveIcon from "@mui/icons-material/Save";
 import CloseIcon from "@mui/icons-material/Close";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutlined";
@@ -42,6 +49,17 @@ import DescriptionIcon from "@mui/icons-material/Description";
 import TuneIcon from "@mui/icons-material/Tune";
 import PhotoLibraryIcon from "@mui/icons-material/PhotoLibrary";
 import PublicIcon from "@mui/icons-material/Public";
+
+// Leaflet butuh window — render hanya di client
+const MapPicker = dynamic(
+  () => import("@/modules/cms/components/map-picker").then((m) => m.MapPicker),
+  {
+    ssr: false,
+    loading: () => (
+      <Box sx={{ height: 320, borderRadius: 1, border: "1px solid #E2E8F0", bgcolor: "#F8FAFC" }} />
+    ),
+  }
+);
 
 type Category = { id: string; name: string };
 type Customer = { id: string; name: string; email: string };
@@ -75,6 +93,10 @@ type InitialData = {
   lantai?: number | null;
   garasi?: number | null;
   statusProperti?: string | null;
+  nego?: boolean | null;
+  periodeSewa?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   tahunDibangun?: number | null;
   sertifikat?: string | null;
   hadapRumah?: string | null;
@@ -82,6 +104,9 @@ type InitialData = {
   sumberAir?: string | null;
   // Fasilitas Sekunder
   fasilitas?: string[];
+  // Landmark (cache Overpass + flag manual) — untuk editor CRUD
+  nearbyPlaces?: unknown;
+  nearbyPlacesManual?: boolean | null;
 };
 
 type GalleryPhoto = {
@@ -99,6 +124,17 @@ const TABS = [
   { label: "Deskripsi", icon: <DescriptionIcon sx={{ fontSize: 16 }} /> },
   { label: "Media & Tour", icon: <PhotoLibraryIcon sx={{ fontSize: 16 }} /> },
   { label: "SEO & Publikasi", icon: <PublicIcon sx={{ fontSize: 16 }} /> },
+];
+
+// Pemetaan field → tab (indeks = nomor tab). Sumber tunggal untuk badge error,
+// auto-navigate saat submit gagal, dan pre-check publish.
+const TAB_FIELDS: string[][] = [
+  ["title", "categoryId", "propertyType", "address", "city", "price"],
+  ["provinceCode", "regencyCode", "districtCode", "villageCode", "latitude", "longitude"],
+  ["luasTanah", "luasBangunan", "kamarTidur", "kamarMandi", "lantai", "garasi", "statusProperti", "nego", "periodeSewa", "tahunDibangun", "sertifikat", "hadapRumah", "dayaListrik", "sumberAir"],
+  ["description"],
+  [],
+  ["metaTitle", "metaDescription", "ownerId"],
 ];
 
 export function ListingForm({
@@ -122,6 +158,73 @@ export function ListingForm({
   const [customerQuery, setCustomerQuery] = useState("");
   const [panoeeValue, setPanoeeValue] = useState(initial?.panoeeEmbed ?? "");
   const [status, setStatus] = useState<InitialData["status"]>(initial?.status ?? "DRAFT");
+  const [statusPropertiValue, setStatusPropertiValue] = useState<InitialData["statusProperti"]>(initial?.statusProperti ?? "");
+  const [coords, setCoords] = useState({
+    lat: initial?.latitude != null ? String(initial.latitude) : "",
+    lng: initial?.longitude != null ? String(initial.longitude) : "",
+  });
+  const [regionCodes, setRegionCodes] = useState({
+    provinceCode: initial?.provinceCode ?? "",
+    regencyCode: initial?.regencyCode ?? "",
+    districtCode: initial?.districtCode ?? "",
+    villageCode: initial?.villageCode ?? "",
+  });
+  const [regionNames, setRegionNames] = useState<{
+    province: string | null;
+    regency: string | null;
+    district: string | null;
+    village: string | null;
+  }>({ province: null, regency: null, district: null, village: null });
+  const [regionSyncMsg, setRegionSyncMsg] = useState<{ severity: "success" | "warning"; text: string } | null>(null);
+  const [resolvingRegion, setResolvingRegion] = useState(false);
+  const syncSeq = useRef(0);
+
+  // Sumber tunggal wilayah = peta: setiap titik lokasi ditentukan (klik / geser pin /
+  // cari / ketik koordinat), Provinsi s/d Kelurahan otomatis mengikuti hasil geocode.
+  async function syncRegionFromCoords(latStr: string, lngStr: string) {
+    const lat = Number(latStr.replace(/,/g, "."));
+    const lng = Number(lngStr.replace(/,/g, "."));
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return;
+
+    const seq = ++syncSeq.current;
+    setResolvingRegion(true);
+    try {
+      const res = await resolveWilayahFromCoords(lat, lng);
+      if (seq !== syncSeq.current) return; // respons basi — sudah ada aksi terbaru
+      if (res.error) {
+        setRegionSyncMsg({ severity: "warning", text: res.error });
+        return;
+      }
+      if (!res.provinceCode) {
+        setRegionSyncMsg({ severity: "warning", text: "Wilayah tidak dikenali dari koordinat ini — coba geser pin lebih dekat ke lokasi" });
+        return;
+      }
+      setRegionCodes({
+        provinceCode: res.provinceCode ?? "",
+        regencyCode: res.regencyCode ?? "",
+        districtCode: res.districtCode ?? "",
+        villageCode: res.villageCode ?? "",
+      });
+      setRegionNames({
+        province: res.provinceName ?? null,
+        regency: res.regencyName ?? null,
+        district: res.districtName ?? null,
+        village: res.villageName ?? null,
+      });
+      if (res.regencyName) setCityValue(res.regencyName);
+      const parts = [res.provinceName, res.regencyName, res.districtName, res.villageName].filter(Boolean).join(" › ");
+      setRegionSyncMsg({
+        severity: res.warning ? "warning" : "success",
+        text: `Wilayah mengikuti peta: ${parts}${res.warning ? ` — ${res.warning}` : ""}`,
+      });
+    } catch (e: unknown) {
+      console.error("[syncRegionFromCoords]", e);
+      if (seq !== syncSeq.current) return;
+      setRegionSyncMsg({ severity: "warning", text: "Gagal menyinkronkan wilayah dari peta — periksa koneksi lalu coba lagi" });
+    } finally {
+      if (seq === syncSeq.current) setResolvingRegion(false);
+    }
+  }
   const [titleValue, setTitleValue] = useState(initial?.title ?? "");
   const [cityValue, setCityValue] = useState(initial?.city ?? "");
   const [fasilitas, setFasilitas] = useState<string[]>(initial?.fasilitas ?? []);
@@ -150,24 +253,10 @@ export function ListingForm({
   }, [panoeeValue]);
 
   // Tab badge — tandai tab yang punya field error
-  const tabErrors = useMemo(() => {
-    const e = fieldErrors;
-    return [
-      // Tab 0: Informasi Dasar
-      ["title","categoryId","propertyType","address","city","price"].some(k => e[k]?.length),
-      // Tab 1: Wilayah
-      ["provinceCode","regencyCode","districtCode","villageCode"].some(k => e[k]?.length),
-      // Tab 2: Detail & Fasilitas
-      ["luasTanah","luasBangunan","kamarTidur","kamarMandi","lantai","garasi","statusProperti",
-       "tahunDibangun","sertifikat","hadapRumah","dayaListrik","sumberAir"].some(k => e[k]?.length),
-      // Tab 3: Deskripsi
-      ["description"].some(k => e[k]?.length),
-      // Tab 4: Media & Tour
-      false,
-      // Tab 5: SEO & Publikasi
-      ["metaTitle","metaDescription","ownerId"].some(k => e[k]?.length),
-    ];
-  }, [fieldErrors]);
+  const tabErrors = useMemo(
+    () => TAB_FIELDS.map((keys) => keys.some((k) => fieldErrors[k]?.length)),
+    [fieldErrors]
+  );
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -175,6 +264,23 @@ export function ListingForm({
     setFieldErrors({});
     const formData = new FormData(e.currentTarget);
     formData.set("status", status);
+
+    // Pre-check publish di client: beri tahu field wajib yang belum diisi
+    // tanpa round-trip server (validasi server tetap jadi penjaga terakhir).
+    if (status === "PUBLISHED") {
+      const missing = getPublishMissingFields(formData);
+      if (missing.length > 0) {
+        setFieldErrors(Object.fromEntries(missing.map((m) => [m.field, [m.message]])));
+        setError(
+          `Belum bisa dipublikasikan — field wajib belum diisi: ${missing.map((m) => m.label).join(", ")}. ` +
+            "Tab dengan tanda merah berisi field yang perlu dilengkapi."
+        );
+        const tabIdx = TAB_FIELDS.findIndex((keys) => keys.includes(missing[0].field));
+        if (tabIdx >= 0) setActiveTab(tabIdx);
+        return;
+      }
+    }
+
     startTransition(async () => {
       const res = mode === "create" ? await createListing(formData) : await updateListing(initial!.id!, formData);
       if (res.error) {
@@ -183,14 +289,7 @@ export function ListingForm({
           setFieldErrors(res.fieldErrors);
           // Auto-navigate ke tab pertama yang punya error
           const errKeys = Object.keys(res.fieldErrors);
-          const tabIdx = [
-            ["title","categoryId","propertyType","address","city","price"],
-            ["provinceCode","regencyCode","districtCode","villageCode"],
-            ["luasTanah","luasBangunan","kamarTidur","kamarMandi","lantai","garasi","statusProperti","tahunDibangun","sertifikat","hadapRumah","dayaListrik","sumberAir"],
-            ["description"],
-            [],
-            ["metaTitle","metaDescription","ownerId"],
-          ].findIndex(keys => keys.some(k => errKeys.includes(k)));
+          const tabIdx = TAB_FIELDS.findIndex((keys) => keys.some((k) => errKeys.includes(k)));
           if (tabIdx >= 0) setActiveTab(tabIdx);
         }
         return;
@@ -440,31 +539,123 @@ export function ListingForm({
         </Box>
       </Box>
 
-      {/* ── TAB 1: Wilayah ── */}
+      {/* ── TAB 1: Wilayah (sumber: peta) ── */}
       <Box sx={{ ...tabContentSx(1), pt: 3 }}>
         <Paper elevation={0} sx={{ borderRadius: 1, border: "1px solid #E2E8F0", p: 3 }}>
           <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2 }}>
-            <LocationOnIcon sx={{ color: "#1D4ED8", fontSize: 20 }} />
+            <PlaceIcon sx={{ color: "#1D4ED8", fontSize: 20 }} />
             <Box>
-              <Typography variant="subtitle2" sx={{ fontWeight: 700, color: "#0F172A" }}>Wilayah</Typography>
-              <Typography variant="caption" sx={{ color: "#94A3B8" }}>Pilih provinsi hingga desa untuk data region lengkap</Typography>
-            </Box>
-          </Box>
-          <RegionSelect
-            initialProvince={initial?.provinceCode ?? null}
-            initialRegency={initial?.regencyCode ?? null}
-            initialDistrict={initial?.districtCode ?? null}
-            initialVillage={initial?.villageCode ?? null}
-            onCityChange={setCityValue}
-          />
-          {initial?.regionPath && (
-            <Box sx={{ mt: 1.5, display: "flex", alignItems: "center", gap: 1 }}>
-              <LocationOnIcon sx={{ fontSize: 14, color: "#94A3B8" }} />
-              <Typography variant="caption" sx={{ color: "#64748B" }}>
-                Wilayah tersimpan: <strong>{initial.regionPath}</strong>
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, color: "#0F172A" }}>Wilayah &amp; Lokasi pada Peta</Typography>
+              <Typography variant="caption" sx={{ color: "#94A3B8" }}>
+                Tentukan titik lokasi via peta — Provinsi s/d Kelurahan otomatis mengikuti, tanpa pilih manual
               </Typography>
             </Box>
-          )}
+          </Box>
+          <Grid container spacing={2}>
+            <Grid size={{ xs: 12, md: 7 }}>
+              <MapPicker
+                latitude={coords.lat}
+                longitude={coords.lng}
+                onChange={(lat, lng) => {
+                  setCoords({ lat, lng });
+                  void syncRegionFromCoords(lat, lng);
+                }}
+              />
+            </Grid>
+            <Grid size={{ xs: 12, md: 5 }}>
+              <Stack spacing={2}>
+                <TextField
+                  name="latitude"
+                  label="Latitude"
+                  value={coords.lat}
+                  onChange={(e) => setCoords((c) => ({ ...c, lat: e.target.value }))}
+                  onBlur={() => void syncRegionFromCoords(coords.lat, coords.lng)}
+                  fullWidth
+                  slotProps={{ htmlInput: { inputMode: "decimal", placeholder: "-6.2088" } }}
+                  error={!!fieldErrors.latitude}
+                  helperText={fieldErrors.latitude?.[0] ?? "Rentang -90 s/d 90"}
+                  sx={inputSx}
+                />
+                <TextField
+                  name="longitude"
+                  label="Longitude"
+                  value={coords.lng}
+                  onChange={(e) => setCoords((c) => ({ ...c, lng: e.target.value }))}
+                  onBlur={() => void syncRegionFromCoords(coords.lat, coords.lng)}
+                  fullWidth
+                  slotProps={{ htmlInput: { inputMode: "decimal", placeholder: "106.8456" } }}
+                  error={!!fieldErrors.longitude}
+                  helperText={fieldErrors.longitude?.[0] ?? "Rentang -180 s/d 180"}
+                  sx={inputSx}
+                />
+                {resolvingRegion && (
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                    <CircularProgress size={14} />
+                    <Typography variant="caption" sx={{ color: "#64748B" }}>Menyinkronkan wilayah dari peta...</Typography>
+                  </Box>
+                )}
+                {regionSyncMsg && (
+                  <Alert
+                    severity={regionSyncMsg.severity}
+                    onClose={() => setRegionSyncMsg(null)}
+                    sx={{ borderRadius: 1, py: 0.25, fontSize: "0.75rem", alignItems: "center" }}
+                  >
+                    {regionSyncMsg.text}
+                  </Alert>
+                )}
+                <Box sx={{ p: 1.5, borderRadius: 1, bgcolor: "#F8FAFC", border: "1px solid #E2E8F0" }}>
+                  <Typography variant="caption" sx={{ fontWeight: 600, color: "#94A3B8", fontSize: "0.67rem" }}>
+                    WILAYAH (OTOMATIS DARI PETA)
+                  </Typography>
+                  {regionNames.province ? (
+                    <Stack spacing={0.25} sx={{ mt: 0.75 }}>
+                      {[
+                        ["Provinsi", regionNames.province],
+                        ["Kabupaten / Kota", regionNames.regency],
+                        ["Kecamatan", regionNames.district],
+                        ["Kelurahan / Desa", regionNames.village],
+                      ].map(([label, value]) => (
+                        <Box key={label} sx={{ display: "flex", gap: 1, alignItems: "baseline" }}>
+                          <Typography variant="caption" sx={{ color: "#64748B", minWidth: 110 }}>{label}</Typography>
+                          <Typography variant="caption" sx={{ color: "#0F172A", fontWeight: value ? 600 : 400 }}>
+                            {value ?? "belum dikenali"}
+                          </Typography>
+                        </Box>
+                      ))}
+                    </Stack>
+                  ) : initial?.regionPath ? (
+                    <Typography variant="caption" sx={{ display: "block", mt: 0.5, color: "#64748B" }}>
+                      Wilayah tersimpan: <strong>{initial.regionPath}</strong>
+                      {" — "}tentukan titik di peta untuk menggantinya
+                    </Typography>
+                  ) : (
+                    <Typography variant="caption" sx={{ display: "block", mt: 0.5, color: "#94A3B8" }}>
+                      Belum ditentukan — klik peta atau cari lokasi untuk mengisi wilayah.
+                    </Typography>
+                  )}
+                </Box>
+              </Stack>
+            </Grid>
+          </Grid>
+
+          {/* Kode wilayah — murni hasil geocode peta, ikut ter-submit */}
+          <input type="hidden" name="provinceCode" value={regionCodes.provinceCode} />
+          <input type="hidden" name="regencyCode" value={regionCodes.regencyCode} />
+          <input type="hidden" name="districtCode" value={regionCodes.districtCode} />
+          <input type="hidden" name="villageCode" value={regionCodes.villageCode} />
+          <input
+            type="hidden"
+            name="regionCode"
+            value={regionCodes.villageCode || regionCodes.districtCode || regionCodes.regencyCode || regionCodes.provinceCode}
+          />
+
+          <Divider sx={{ my: 2.5 }} />
+
+          <LandmarkEditor
+            latitude={coords.lat}
+            longitude={coords.lng}
+            initialPlaces={parseNearbyPlaces(initial?.nearbyPlaces)}
+          />
         </Paper>
         <Box sx={{ display: "flex", justifyContent: "space-between", mt: 2 }}>
           <Button variant="outlined" size="small" onClick={() => setActiveTab(0)}
@@ -495,7 +686,13 @@ export function ListingForm({
               <Grid size={{ xs: 12, sm: 6 }}>
                 <FormControl fullWidth error={!!fieldErrors.statusProperti} sx={inputSx}>
                   <InputLabel>{lbl("Status Properti", "statusProperti")}</InputLabel>
-                  <MuiSelect name="statusProperti" defaultValue={initial?.statusProperti ?? ""} label={lbl("Status Properti", "statusProperti")} required={req("statusProperti")}>
+                  <MuiSelect
+                    name="statusProperti"
+                    value={statusPropertiValue ?? ""}
+                    onChange={(e) => setStatusPropertiValue(e.target.value)}
+                    label={lbl("Status Properti", "statusProperti")}
+                    required={req("statusProperti")}
+                  >
                     <MenuItem value="">-- Pilih --</MenuItem>
                     <MenuItem value="DIJUAL">Dijual</MenuItem>
                     <MenuItem value="DISEWA">Disewa</MenuItem>
@@ -504,6 +701,28 @@ export function ListingForm({
                   {fieldErrors.statusProperti && <FormHelperText>{fieldErrors.statusProperti[0]}</FormHelperText>}
                 </FormControl>
               </Grid>
+              {(statusPropertiValue === "DIJUAL" || statusPropertiValue === "DIJUAL_DISEWA") && (
+                <Grid size={{ xs: 12, sm: 6 }}>
+                  <FormControlLabel
+                    control={<Checkbox name="nego" defaultChecked={initial?.nego ?? false} />}
+                    label="Nego"
+                    sx={{ height: 56, m: 0, "& .MuiFormControlLabel-label": { fontSize: "0.8rem", color: "#0F172A" } }}
+                  />
+                </Grid>
+              )}
+              {(statusPropertiValue === "DISEWA" || statusPropertiValue === "DIJUAL_DISEWA") && (
+                <Grid size={{ xs: 12, sm: 6 }}>
+                  <FormControl fullWidth sx={inputSx}>
+                    <InputLabel>Periode Sewa</InputLabel>
+                    <MuiSelect name="periodeSewa" defaultValue={initial?.periodeSewa ?? ""} label="Periode Sewa">
+                      <MenuItem value="">-- Pilih --</MenuItem>
+                      <MenuItem value="BULANAN">Bulanan</MenuItem>
+                      <MenuItem value="TAHUNAN">Tahunan</MenuItem>
+                      <MenuItem value="BULANAN_DAN_TAHUNAN">Bulanan dan Tahunan</MenuItem>
+                    </MuiSelect>
+                  </FormControl>
+                </Grid>
+              )}
               <Grid size={{ xs: 12, sm: 6 }}>
                 <FormControl fullWidth sx={inputSx}>
                   <InputLabel>Sertifikat</InputLabel>

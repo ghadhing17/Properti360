@@ -13,6 +13,7 @@ import VerifiedIcon from "@mui/icons-material/Verified";
 import WhatsAppIcon from "@mui/icons-material/WhatsApp";
 import { BookingForm } from "@/modules/landing/components/booking-form";
 import { getActiveServiceProducts } from "@/modules/landing/queries/landing";
+import { getScheduleSettings, summarizeOperatingHours } from "@/shared/lib/schedule-settings";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
@@ -22,10 +23,6 @@ export const metadata: Metadata = {
 };
 
 export const revalidate = 60;
-
-async function getProducts() {
-  return getActiveServiceProducts();
-}
 
 const WHY_BOOK = [
   {
@@ -41,7 +38,7 @@ const WHY_BOOK = [
   {
     icon: <EventAvailableIcon sx={{ fontSize: 22 }} />,
     title: "Jadwal Fleksibel",
-    desc: "Senin–Sabtu, 09:00–16:00. Pilih slot kosong.",
+    desc: "Pilih slot kosong sesuai jam operasional kami.",
   },
   {
     icon: <VerifiedIcon sx={{ fontSize: 22 }} />,
@@ -58,7 +55,9 @@ export default async function BookingPage({ searchParams }: Props) {
   const params = await searchParams;
   const initialProductId = params.product ?? params.paket ?? undefined;
 
-  const products = await getProducts();
+  const products = await getActiveServiceProducts();
+  const schedule = await getScheduleSettings();
+  const scheduleNote = `Jam operasional ${summarizeOperatingHours(schedule)}`;
 
   const selectedProduct = initialProductId
     ? products.find((p) => p.id === initialProductId)
@@ -150,7 +149,7 @@ export default async function BookingPage({ searchParams }: Props) {
           {/* Left: form */}
           <Grid size={{ xs: 12, md: 7 }}>
             <Suspense fallback={null}>
-              <BookingForm products={products} initialProductId={initialProductId} />
+              <BookingForm products={products} initialProductId={initialProductId} scheduleNote={scheduleNote} />
             </Suspense>
           </Grid>
 

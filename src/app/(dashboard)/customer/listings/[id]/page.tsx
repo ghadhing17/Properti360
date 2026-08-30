@@ -104,6 +104,7 @@ export default async function CustomerListingDetailPage({ params }: Props) {
             )}
             <CustomerEditForm
               listingId={listing.id}
+              isPublished={listing.status === "PUBLISHED"}
               initial={{
                 description: listing.description,
                 price: listing.price,

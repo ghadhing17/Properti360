@@ -54,7 +54,7 @@ export function GalleryLightbox({
               key={m.id}
               type="button"
               onClick={() => setActive(idx)}
-              className="group overflow-hidden rounded-lg border bg-background text-left focus:outline-none focus:ring-2 focus:ring-primary/30"
+              className="group overflow-hidden rounded-lg border border-border bg-background text-left focus:outline-none focus:ring-2 focus:ring-primary/30"
               aria-label={`Buka foto ${idx + 1}`}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}

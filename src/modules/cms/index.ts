@@ -17,3 +17,20 @@ export {
   getAllProductsAdmin,
   getProductById,
 } from "./queries/cms";
+
+// Queries — settings
+export {
+  getSiteSettings,
+  getSiteSettingsSafe,
+  getOperatingHours,
+  getHolidays,
+  getScheduleSettingsForAdmin,
+  getAdminProfile,
+  getAllUsersForAdmin,
+  getActiveRegions,
+  getActiveRegionSets,
+  getAllRegionsForAdmin,
+  type AdminUserRow,
+  type ActiveRegionRow,
+  type WilayahRow,
+} from "./queries/settings";

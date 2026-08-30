@@ -1,7 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // kosong dulu — skeleton siap dikembangkan
+  experimental: {
+    serverActions: {
+      bodySizeLimit: "10mb",
+    },
+  },
 };
 
 export default nextConfig;

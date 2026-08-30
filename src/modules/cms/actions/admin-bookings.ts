@@ -17,6 +17,7 @@ import {
   OPERATING_START_HOUR,
   OPERATING_END_HOUR,
 } from "@/shared/lib/booking-schedule";
+import { getScheduleSettings, describeScheduleConflict } from "@/shared/lib/schedule-settings";
 
 export type BookingActionResult = {
   success?: boolean;
@@ -51,6 +52,13 @@ async function validateSchedule(
 
   if (!isWithinOperatingHours(dt)) {
     return `Jadwal di luar jam operasional. Pilih waktu antara ${OPERATING_START_HOUR.toString().padStart(2,"0")}:00 – ${OPERATING_END_HOUR.toString().padStart(2,"0")}:00.`;
+  }
+
+  // Cek pengaturan jadwal dari /admin/settings (hari tutup + hari libur + jam per hari)
+  const schedule = await getScheduleSettings();
+  const scheduleConflict = describeScheduleConflict(schedule, dt);
+  if (scheduleConflict) {
+    return `Maaf, jadwal tidak tersedia — ${scheduleConflict}.`;
   }
 
   const conflicts = await findConflicts(dt, excludeId);

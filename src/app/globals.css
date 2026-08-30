@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #1d4ed8;
+  --color-primary-dark: #1e3a8a;
+  --color-accent: #60a5fa;
+  --color-background: #f8fafc;
+  --color-surface: #ffffff;
+  --color-foreground: #0f172a;
+  --color-muted: #64748b;
+  --color-border: #e2e8f0;
+  --color-success: #16a34a;
+  --color-warning: #f59e0b;
+  --color-danger: #dc2626;
+
+  /* alias supaya konsisten di design token */
+  --color-brand: var(--color-primary);
+  --color-brand-dark: var(--color-primary-dark);
+}
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --primary: #1d4ed8;
+  --primary-dark: #1e3a8a;
+  --accent: #60a5fa;
+  --muted: #64748b;
+  --border: #e2e8f0;
+  --success: #16a34a;
+  --warning: #f59e0b;
+  --danger: #dc2626;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-geist-sans, ui-sans-serif), system-ui, sans-serif;
+  }
+}
+
+/* utility helper: dipakai konsisten di semua komponen */
+@utility bg-primary {
+  background-color: var(--color-primary);
+}
+@utility text-primary {
+  color: var(--color-primary);
+}
+@utility bg-primary-dark {
+  background-color: var(--color-primary-dark);
+}
+@utility text-accent {
+  color: var(--color-accent);
+}
+@utility bg-accent {
+  background-color: var(--color-accent);
+}

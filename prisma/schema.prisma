@@ -1,0 +1,350 @@
+// Properti360 — Platform Virtual Tour 360°
+// Prisma schema untuk PostgreSQL (Coolify / Docker)
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ──────────────────────────────────────────────────────────────
+// ENUMS
+// ──────────────────────────────────────────────────────────────
+enum Role {
+  ADMIN
+  CUSTOMER
+}
+
+enum PropertyType {
+  RUMAH
+  APARTEMEN
+  HOTEL
+  RUKO
+  VENUE
+  LAINNYA
+}
+
+enum ListingStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum MediaType {
+  PANOEE_TOUR
+  PHOTO
+  VIDEO
+}
+
+enum BookingStatus {
+  PENDING
+  CONTACTED
+  DONE
+  CANCELLED
+}
+
+enum FacingDirection {
+  UTARA
+  SELATAN
+  TIMUR
+  BARAT
+  TIMUR_LAUT
+  BARAT_LAUT
+  TIMUR_SELATAN
+  BARAT_SELATAN
+}
+
+enum CertificateType {
+  SHM
+  HGB
+  SHP
+  SHSRS
+  GIRIK
+  LAINNYA
+}
+
+enum PropertyStatus {
+  DIJUAL
+  DISEWA
+  DIJUAL_DISEWA
+}
+
+enum WaterSource {
+  PDAM
+  SUMUR
+  SUMUR_BOR
+  LAINNYA
+}
+
+// ──────────────────────────────────────────────────────────────
+// MODELS
+// ──────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  phone         String?
+  password      String // hash bcrypt, jangan simpan plain text
+  role          Role      @default(CUSTOMER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relasi: satu CUSTOMER bisa punya banyak Listing
+  listings Listing[]
+  accounts Account[]
+  sessions Session[]
+
+  @@map("users")
+}
+
+// Auth.js required models — dipakai PrismaAdapter (wajib meski session strategy JWT)
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  listings Listing[]
+
+  @@map("categories")
+}
+
+model Listing {
+  id           String        @id @default(cuid())
+  slug         String        @unique
+  title        String
+  description  String        @db.Text
+  propertyType PropertyType
+  address      String        @db.Text
+  city         String
+  price        Int? // nullable — tidak semua listing pakai harga (mis. venue sewa harian)
+  status       ListingStatus @default(DRAFT)
+  viewCount    Int           @default(0)
+
+  // ── Wilayah administratif (Kepmendagri 300.2.2-2430/2025)
+  // Kode hierarkis: prov(2) → kab/kota(5) → kec(8) → desa/kel(13) — contoh: 32.73.01.1001
+  provinceCode String? // ex: "32"
+  provinceName String? // ex: "Jawa Barat"
+  regencyCode  String? // ex: "32.73"
+  regencyName  String? // ex: "Kota Bandung"
+  districtCode String? // ex: "32.73.01"
+  districtName String? // ex: "Coblong"
+  villageCode  String? // ex: "32.73.01.1001"
+  villageName  String? // ex: "Dago"
+  // full path denormalized untuk display & search: "Dago, Coblong, Kota Bandung, Jawa Barat"
+  regionPath String? @db.Text
+  regionCode String? // kode paling spesifik yang dipilih (desa > kec > kab > prov)
+
+  // ── Detail Primer Properti
+  luasTanah      Int?    // m²
+  luasBangunan   Int?    // m²
+  kamarTidur     Int?
+  kamarMandi     Int?
+  lantai         Int?
+  garasi         Int?    // jumlah kapasitas garasi/carport
+  statusProperti PropertyStatus?
+  tahunDibangun  Int?
+  sertifikat     CertificateType?
+  hadapRumah     FacingDirection?
+  dayaListrik    Int?    // Watt
+  sumberAir      WaterSource?
+
+  // ── Fasilitas Sekunder (simpan sebagai array string di Postgres)
+  fasilitas      String[] // ex: ["KOLAM_RENANG","CCTV","AC"]
+
+  // SEO
+  metaTitle       String?
+  metaDescription String? @db.Text
+
+  // FK
+  ownerId String?
+  owner   User?  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relasi
+  media    Media[]
+  leads    Lead[]
+  viewLogs ListingViewLog[]
+
+  // Index untuk query yang sering dipakai (filter & lookup)
+  @@index([slug])
+  @@index([city])
+  @@index([status])
+  @@index([categoryId])
+  @@index([ownerId])
+  @@index([propertyType])
+  @@index([createdAt])
+  @@index([provinceCode])
+  @@index([regencyCode])
+  @@index([districtCode])
+  @@index([villageCode])
+  @@index([regionCode])
+  @@map("listings")
+}
+
+// Data wilayah Indonesia (Kepmendagri No. 300.2.2-2430 Tahun 2025 — 91k+ baris: prov → desa/kel)
+model Wilayah {
+  kode String @id // "11" | "11.01" | "11.01.01" | "11.01.01.2001" — panjang menentukan level
+  nama String
+
+  @@index([nama])
+  @@map("wilayah")
+}
+
+model ListingViewLog {
+  id        String   @id @default(cuid())
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  date  DateTime @db.Date
+  count Int      @default(0)
+
+  @@unique([listingId, date])
+  @@index([date])
+  @@index([listingId])
+  @@map("listing_view_logs")
+}
+
+model Media {
+  id        String  @id @default(cuid())
+  listingId String
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  type            MediaType
+  url             String?   @db.Text // untuk PHOTO/VIDEO biasa (nullable untuk PANOEE_TOUR)
+  panoeeEmbedUrl  String?   @db.Text // URL embed iframe Panoee
+  panoeeShortcode String?   @db.Text // shortcode / kode embed Panoee
+  thumbnailUrl    String?   @db.Text
+  altText         String? // untuk SEO & accessibility
+  order           Int       @default(0) // urutan tampil di galeri
+
+  createdAt DateTime @default(now())
+
+  @@index([listingId])
+  @@index([type])
+  @@map("media")
+}
+
+model Lead {
+  id        String  @id @default(cuid())
+  listingId String
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  name    String
+  phone   String
+  message String @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@index([listingId])
+  @@index([createdAt])
+  @@map("leads")
+}
+
+model BlogPost {
+  id              String    @id @default(cuid())
+  slug            String    @unique
+  title           String
+  content         String    @db.Text
+  coverImage      String?   @db.Text
+  metaTitle       String?
+  metaDescription String?   @db.Text
+  publishedAt     DateTime? // null = draft, isi tanggal = published
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([slug])
+  @@index([publishedAt])
+  @@map("blog_posts")
+}
+
+model ServiceProduct {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String   @db.Text
+  price       Int?     // harga dalam rupiah, null = "hubungi kami"
+  features    String[] // list fitur, mis. ["8 scene 360°", "Galeri 20 foto"]
+  isActive    Boolean  @default(true)
+  isPopular   Boolean  @default(false)
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  bookings BookingRequest[]
+
+  @@index([isActive])
+  @@index([order])
+  @@map("service_products")
+}
+
+model BookingRequest {
+  id            String         @id @default(cuid())
+  name          String
+  phone         String
+  address       String         @db.Text
+  propertyType  PropertyType   @default(RUMAH)
+  preferredDate DateTime?
+  status        BookingStatus  @default(PENDING)
+  productId     String?
+  product       ServiceProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([propertyType])
+  @@index([productId])
+  @@map("booking_requests")
+}

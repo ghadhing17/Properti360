@@ -4,16 +4,26 @@ package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
-# Build
+# Next.js
 .next/
-dist/
-build/
 out/
+build/
+dist/
 
-# Env
+# Env — jangan commit credential
 .env
 .env.local
 .env.*.local
+.env.development.local
+.env.production.local
+
+# Storage — jangan commit upload user
+/storage/uploads
+/storage/uploads/*
+!storage/uploads/.gitkeep
+
+# Prisma
+prisma/migrations/
 
 # OS
 .DS_Store
@@ -25,7 +35,14 @@ Thumbs.db
 *.log
 npm-debug.log*
 
+# Secrets — jangan commit credential
+docs/inv.txt
+*.pem
+
 # Temp
 opencode/
 tmp/
 temp/
+
+# TS build info
+tsconfig.tsbuildinfo

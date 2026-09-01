@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
@@ -22,8 +21,8 @@ dist/
 /storage/uploads/*
 !storage/uploads/.gitkeep
 
-# Prisma
-prisma/migrations/
+# Prisma — JANGAN ignore migrations (dibutuhkan untuk deploy production via `prisma migrate deploy`)
+# prisma/migrations/  <-- sengaja di-commit
 
 # OS
 .DS_Store

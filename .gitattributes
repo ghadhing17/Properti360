@@ -1,0 +1,6 @@
+# Enforce LF for files that run inside Linux container
+Dockerfile text eol=lf
+docker-entrypoint.sh text eol=lf
+*.sh text eol=lf
+# Keep shell scripts executable
+docker-entrypoint.sh linguist-language=Shell
